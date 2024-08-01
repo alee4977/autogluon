@@ -9,7 +9,7 @@ import numpy as np
 
 from phem.application_utils.supported_metrics import msc
 from phem.base_utils.metrics import make_metric
-from sklearn.metrics import mean_squared_error
+from sklearn.metrics import mean_squared_error, log_loss
 
 from phem.methods.ensemble_weighting import CMAES
 from phem.methods.ensemble_selection.qdo import (
@@ -49,7 +49,15 @@ def score_metric_creation(metric_type: str, labels: np.ndarray):
     elif (metric_type == "roc_auc"):
         score_metric = msc(metric_name="roc_auc", is_binary=True, labels=[0, 1])
     elif (metric_type == "log_loss"):
-        score_metric = msc(metric_name="log_loss", is_binary=True, labels=[0,1]) # Multiclass but becomes binary
+        score_metric = make_metric(
+            partial(log_loss, labels=[0,1]),
+            metric_name="log_loss",
+            maximize=False,
+            classification=True,
+            always_transform_conf_to_pred=False,
+            optimum_value=0,
+            requires_confidences=False
+        )
 
     return score_metric
 
@@ -67,6 +75,9 @@ def create_and_fit_ensemble_cmaes(predictions, labels, ensemble_size, method_nam
             trim_weights=trim_weights,
         )
     
+    # predictions = expand_binary_predictions(predictions)
+    # labels = expand_binary_predictions(labels)
+    print("This is the shape of predictions: ", predictions.shape)
     es.fit(predictions.T, labels)
     return es
 
@@ -86,3 +97,10 @@ def create_and_fit_ensemble_qdo(predictions, labels, ensemble_size, method_name,
 
     es.fit(predictions.T, labels)
     return es 
+
+def expand_binary_predictions(predictions):
+    # Calculate probabilities for the negative class (class 0)
+    negative_class_probs = 1 - predictions
+    # Stack the negative and positive class probabilities along a new dimension
+    expanded_predictions = np.stack([negative_class_probs, predictions], axis=-1)
+    return expanded_predictions
