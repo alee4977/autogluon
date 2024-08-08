@@ -12,6 +12,11 @@ from phem.base_utils.metrics import make_metric
 from sklearn.metrics import mean_squared_error, log_loss
 
 from phem.methods.ensemble_weighting import CMAES
+from phem.methods.ensemble_selection import EnsembleSelection as PHEMEnsembleSelection
+from ...core.models.greedy_ensemble.ensemble_selection import EnsembleSelection as AutoGluonEnsembleSelection
+
+from phem.framework.abstract_numerical_solvers import evaluate_single_solution
+
 from phem.methods.ensemble_selection.qdo import (
     QDOEnsembleSelection,
     get_bs_ensemble_size_and_loss_correlation,
@@ -24,7 +29,7 @@ def base_models_creation(predictions: List[np.ndarray]):
 
     # Create FakedFittedAndValidatedClassificationBaseModel instances
     base_models_data = []
-    for i in range(predictions.shape[0]):
+    for i in range(len(predictions)):
         bm_data = FakedFittedAndValidatedClassificationBaseModel(
             name=f"model_{i}",
             val_probabilities=predictions[i],  # Using the same probabilities for validation and test
@@ -61,6 +66,51 @@ def score_metric_creation(metric_type: str, labels: np.ndarray):
 
     return score_metric
 
+def get_top_N_predictions(predictions, labels, metric, num_of_base_models):
+
+        if (predictions.shape[0] < num_of_base_models):
+            return predictions
+        else:
+            num_models = predictions.shape[0]
+            scores = []
+            pred = []
+
+            for i in range(num_models):
+                score = metric(y_pred=predictions[i], y_true=labels)
+                pred.append(predictions[i])
+                scores.append(score)
+  
+            sorted_scores_with_indices = sorted((num, idx) for idx, num in enumerate(scores))
+
+            threshold_value = sorted_scores_with_indices[num_of_base_models - 1][0]
+
+            scores = [num if num <= threshold_value else 0 for num in scores]
+
+            predictions_new = [
+                prediction if score != 0 else [0] * len(prediction)
+                for score, prediction in zip(scores, predictions)
+            ]
+
+            predictions_new = np.array(predictions_new)
+
+            return predictions_new
+
+def create_and_fit_ensemble_greedy_ensemble_selection(predictions, labels, ensemble_size, method_name, base_models, score_metric, problem_type, metric):
+
+    if (method_name == "greedy_ensemble_selection"):
+        es = AutoGluonEnsembleSelection(ensemble_size=ensemble_size, problem_type=problem_type,metric=metric)
+        es.fit(predictions, labels) 
+    elif (method_name == "phem_greedy_ensemble_selection"):
+        es = PHEMEnsembleSelection(
+            base_models=base_models,
+            n_iterations=ensemble_size,
+            metric=score_metric,
+            random_state=1,
+        )
+        es.fit(predictions.T, labels)
+
+    return es
+
 def create_and_fit_ensemble_cmaes(predictions, labels, ensemble_size, method_name, base_models, score_metric):
 
     normalize_weights = "softmax" if (method_name == "cmaes_with_normalization") else "no"
@@ -74,11 +124,12 @@ def create_and_fit_ensemble_cmaes(predictions, labels, ensemble_size, method_nam
             normalize_weights=normalize_weights,
             trim_weights=trim_weights,
         )
-    
-    # predictions = expand_binary_predictions(predictions)
-    # labels = expand_binary_predictions(labels)
-    print("This is the shape of predictions: ", predictions.shape)
+
     es.fit(predictions.T, labels)
+
+    if (method_name == 'single_best'):
+        es.weights_ = es.single_best_stats[1]
+    
     return es
 
 def create_and_fit_ensemble_qdo(predictions, labels, ensemble_size, method_name, base_models, score_metric):
@@ -88,7 +139,7 @@ def create_and_fit_ensemble_qdo(predictions, labels, ensemble_size, method_name,
 
     es = QDOEnsembleSelection(
             base_models=base_models,
-            n_iterations=ensemble_size, # Number of iterations determined by self.ensemble_size
+            n_iterations=3, # Number of iterations determined by self.ensemble_size
             score_metric=score_metric,
             archive_type=archive_type,
             behavior_space=behavior_space,
@@ -96,11 +147,4 @@ def create_and_fit_ensemble_qdo(predictions, labels, ensemble_size, method_name,
         )
 
     es.fit(predictions.T, labels)
-    return es 
-
-def expand_binary_predictions(predictions):
-    # Calculate probabilities for the negative class (class 0)
-    negative_class_probs = 1 - predictions
-    # Stack the negative and positive class probabilities along a new dimension
-    expanded_predictions = np.stack([negative_class_probs, predictions], axis=-1)
-    return expanded_predictions
+    return es
